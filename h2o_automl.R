@@ -23,7 +23,7 @@ names <- c('id_number', 'class', 'radius_mean',
 BreastCancer <- read.table(textConnection(UCI_data_URL), sep = ',', col.names = names)
 
 
-# Use  all other features to predict whether a tumor is malignant or benign.
+# Use  all other features to predict whether a tumor is malignant or benign
 y <- 'class'
 x <- setdiff(names(BreastCancer), c(y, 'id_number'))
 
@@ -31,12 +31,11 @@ BreastCancer[, x] <- sapply(BreastCancer[, x], as.numeric)
 BreastCancer[, y] <- as.factor(BreastCancer[, y])
 
 # First, start an H2O instance.
-# H2O requires that objects are in a specific format.
-# Then convert R data frame into an H2O object.
+# H2O requires that objects are in a specific format. Convert R data frame into an H2O object
 h2o.init()
 BreastCancer <- as.h2o(BreastCancer)
 
-# Split into training and test data.
+# Split into training and test data
 split <- h2o.splitFrame(data = BreastCancer, ratios = 0.75, seed=1)
 
 train <- split[[1]]
@@ -61,5 +60,5 @@ head(as.data.frame(pred), style = "rmarkdown")
 pred <- h2o.predict(aml@leader, test)
 head(as.data.frame(pred), style = "rmarkdown")
 
-# shutdown  h2o instance
+# Shutdown  h2o instance
 h2o.shutdown()
