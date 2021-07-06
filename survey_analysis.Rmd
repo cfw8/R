@@ -1,0 +1,373 @@
+---
+title: "Genetic Testing Survey Analysis"
+author: "Clarissa White"
+output:
+html_document: default
+description: null
+editor_options:
+chunk_output_type: console
+always_allow_html: true
+---
+## Load libraries & data
+```{r, echo=F, results='hide', warning=FALSE, message=FALSE}
+setwd("~/OneDrive/Genetic_Survey")
+library(MASS)
+library(tidyverse) # for preprocessing
+library(stringr)
+library(gridExtra)
+#library(zipcode) # for associating zip codes with latitude/longitude
+library(caret) # create dummy variables
+library(cluster) # for PAM clustering
+library(e1071) # for fuzzy clustering
+library(corrplot) # visualize cluster membership
+library(factoextra) # visualize fuzzy clusters
+library(Rtsne)
+library(networkD3) # sankey diagram
+library(htmltools)
+# load data from Qualtrics Survey csv
+data0 <- read.csv("Data/Genetic_Testing_Survey.csv", skip = 3, header = F)
+# plot theme
+# my_theme <- theme_bw() +
+# theme(axis.text = element_text(size = 18), axis.text.x = element_text(size = 18),
+# axis.title = element_text(size = 18), axis.text.y = element_text(size = 18),
+
+# plot.title = element_text(size = 24, hjust = .5, face = "bold"))
+```
+## Preprocess data
+```{r, echo=FALSE}
+# rename columns to avoid repeats and for future convenience
+colnames(data0) <- c("StartDate", "EndDate", "Status", "IPAddress", "Progress",
+                     "Duration_seconds", "Finished", "RecordedDate", "ResponseId",
+                    "RecipientLastName", "RecipientFirstName", "RecipientEmail",
+                    "ExternalReference", "LocationLatitude", "LocationLongitude",
+                    "DistributionChannel", "UserLanguage", "Q_RecaptchaScore",
+                    "Consent", "Previous_testing", "Nutrition_and_Behavior",
+                    "Genetic_ancestry", "Medications", "Improve_Outcome",
+                    "Cannot_improve_outcome", "Active_Infection", "Employer_Test",
+                    "ET_IF_who_sponsors", "ET_IF_who_conducts", "ET_IF_cost",
+                    "ET_IF_returned_results", "ET_IF_sponsor_use", "ET_IF_data_access",
+                    "ET_IF_data_storage_security", "ET_IF_data_ownership",
+                    "ET_IF_anonymity", "ET_IF_other", "ET_other_text", "ET_comments",
+                    "Insurance_Test",
+                    "Ins_IF_who_sponsors", "Ins_IF_who_conducts", "Ins_IF_cost",
+                    "Ins_IF_returned_results", "Ins_IF_sponsor_use", "Ins_IF_data_access",
+                    "Ins_IF_data_storage_security", "Ins_IF_data_ownership",
+                    "Ins_IF_anonymity", "Ins_IF_other", "Ins_other_text", "Ins_comments",
+                    "Research_Study",
+                    "RS_IF_who_sponsors", "RS_IF_who_conducts", "RS_IF_cost",
+                    "RS_IF_returned_results", "RS_IF_sponsor_use", "RS_IF_data_access",
+                    "RS_IF_data_storage_security", "RS_IF_data_ownership",
+                    "RS_IF_anonymity", "RS_IF_other", "RS_other_text", "RS_comments",
+                    "Employer_Test_GINA",
+                    "Insurance_Test_GINA", "Employer_Test_LI",
+                    "Insurance_Test_LI", "Sex", "Birth_Year",
+                    "Ancestry_Asian", "Ancestry_African_Amer",
+                    "Ancestry_Native_Amer", "Ancestry_Pacific_Islander",
+                    "Ancestry_White", "Ancestry_Other",
+                    "Ancestry_Prefer_not_to_say", "Ethnicity", "Income", "Degree",
+                    "Zip_Code", "Have_Disease", "Additional_Comments")
+# function to binarize word responses
+binarize <- function(x) {
+  out <- ifelse(trimws(x) == "", 0, 1)
+  return(out)
+}
+
+data1 <- data0 %>%
+  # remove unfinished and nonconsenting rows
+  filter(Finished=="TRUE", Consent=="Yes") %>%
+  # calculate age and list empty Sex as unknown
+  mutate(Age = 2020 - Birth_Year, Sex = ifelse(Sex=="", "Did not answer", Sex)) %>%
+  # binarize multiple choice responses
+  mutate_at(vars(contains("IF")), binarize) %>%
+  mutate_at(c(71:73,75,76), binarize) %>%
+  # remove unnecessary columns
+  select(-c("StartDate", "EndDate", "Status", "IPAddress", "Progress",
+            "Duration_seconds", "Finished", "RecordedDate",
+            "RecipientLastName", "RecipientFirstName", "RecipientEmail",
+            "ExternalReference", "LocationLatitude", "LocationLongitude",
+            "DistributionChannel", "UserLanguage", "Consent"))
+
+# # create age groups
+# data1$age_group <- factor(ifelse(data1$Age %in% 0:39, "< 40",
+                                  # ifelse(data1$Age %in% 40:49, "40 to 49",
+                                          # ifelse(data1$Age %in% 50:59, "50 to 59", "60+"))),
+                            # levels = c("< 40", "40 to 49", "50 to 59", "60+"))
+
+# column of ones for getting group counts
+data1$counts = as.numeric(1)
+# interested in at least 1 test, no tests, or all tests
+data1$test_interest <- ifelse((data1$Nutrition_and_Behavior == "Yes")
+                              & (data1$Genetic_ancestry == "Yes")
+                              & (data1$Medications == "Yes")
+                              & (data1$Improve_Outcome == "Yes")
+                              & (data1$Cannot_improve_outcome == "Yes")
+                              & (data1$Active_Infection == "Yes"), "All",
+                              ifelse((data1$Nutrition_and_Behavior == "Yes")
+                                     | (data1$Genetic_ancestry == "Yes")
+                                     | (data1$Medications == "Yes")
+                                     | (data1$Improve_Outcome == "Yes")
+                                     | (data1$Cannot_improve_outcome == "Yes")
+                                     | (data1$Active_Infection == "Yes"), 
+                                     "At Least One", "None"))
+head(data1[,1:3])
+```
+
+## Explore demographics of survey participants
+```{r, fig.width=9, fig.height=5, echo=FALSE, warning=FALSE, message=FALSE}
+## general demographics
+# age histogram
+ggplot(data1, aes(x = as.numeric(as.character(Age)))) +
+  geom_histogram(binwidth = 5, color = "black", fill = "#003C71") +
+  ggtitle("Age Distribution") + xlab("Age") + ylab('Count')
+
+# sex bar plot
+ggplot(data1, aes(x = Sex, y = counts)) +
+  geom_bar(stat = "identity", fill = "#003C71") +
+  ggtitle("Sex Distribution") + ylab('Count')
+# ancestry
+ggplot(as.data.frame(t(data1 %>% select(Ancestry_Asian:Ancestry_Other) %>%
+                         summarize_all(list( ~ sum(.))))) %>%
+         mutate(Ancestry = substr(rownames(.), 10, nchar(rownames(.)))),
+       aes(x = fct_reorder(Ancestry, V1, .desc = T), y = V1)) +
+  geom_bar(stat = "identity", fill = "#003C71") +
+  ggtitle("Ancestry Distribution") +
+  xlab("Ancestry") + ylab("Count") + 
+  theme(axis.text.x = element_text(size = 18, angle = 20, vjust=.6))
+# ethnicity bar plot (should I make this a proportion?) #########
+ggplot(data1[data1$Ethnicity!="",], aes(x = Ethnicity, y = counts)) +
+  geom_bar(stat = "identity", fill = "#003C71") +
+  ggtitle("Ethnicity Distribution") +
+  theme(axis.text.x = element_text(size = 18, angle = 20, vjust=.6))
+# income (Sort by income not number of people with that income) #########
+ggplot(data1[data1$Income!="",] %>% group_by(Income) %>% summarize(count =
+  sum(counts)),
+  aes(x = fct_reorder(Income, count, .desc = T), y = count)) +
+  geom_bar(stat = "identity", fill = "#003C71") +
+  ggtitle("Income Distribution") +
+  xlab("Income") + ylab("Count") +
+  theme(axis.text.x = element_text(size = 12, angle = 20, vjust=.6))
+
+# highest degree
+ggplot(data1[data1$Degree!="",] %>% group_by(Degree) %>% 
+         summarize(count = sum(counts)),
+       aes(x = fct_reorder(Degree, count, .desc = T), y = count)) +
+  geom_bar(stat = "identity", fill="#003C71") + xlab("Degree") + ylab("Count") +
+  ggtitle("Highest Degree Earned") +
+  theme(axis.text.x = element_text(size = 18, angle = 20, vjust=.6))
+
+# zip code #########
+# data(zipcode)
+# ggplot(fm, aes(longitude, latitude)) +
+# geom_polygon(data = us, aes(x = long, y = lat, group = group), color='gray', fill=NA,alpha=.35)
++
+# geom_point(aes(color = count),size = 0.15,alpha = 0.25) +
+# xlim(-125, -65) + ylim(20, 50)
+```
+
+## Plot and test using Fisher's Test whether Sex is associated with interest in different genetic
+tests
+```{r, fig.width=8, fig.height=5, echo=FALSE, warning=FALSE, message=FALSE}
+# function to perform chi-squared test on sex and test type interest
+
+## (could be extended to other demographics)
+bar_plot_associations <- function(test_type, test_chr, dem_var = "Sex", dem_chr = "Sex") {
+  # data
+  # remove non-female/male categories
+  if (dem_chr == "Sex") {
+  plot_data <- select(data1[which(data1$Sex %in% c("Female", "Male")),],
+  counts, all_of(dem_var), all_of(test_type))
+  } else {
+  plot_data <- select(data1, counts, all_of(dem_var), all_of(test_type))
+  }
+  colnames(plot_data) <- c("counts", "dem_var", "test_type")
+  
+  # chi-squared test
+  my_tbl <- table(plot_data$dem_var, plot_data$test_type)
+  pval <- fisher.test(my_tbl)$p.value
+  
+  # plot
+  ggplot(plot_data %>% group_by(dem_var, test_type) %>% count(counts) %>%
+            ungroup() %>% group_by(dem_var) %>%
+            filter(test_type!="") %>%
+            mutate(freq = round(n/sum(n), 2), tot = cumsum(n),
+                   pos = ifelse(freq < .5, 1 - (0.5 * freq), freq - (.45 * freq))),
+         aes(x = dem_var, y = freq, fill = test_type)) +
+    # plot type and axis labels
+    geom_bar(stat='identity') + xlab(dem_chr) + ylab("Proportion") + # my_theme +
+    # add frequency labels to the bars
+    geom_text(aes(x = dem_var, y = pos, label = freq), size = 8) +
+    guides(fill=guide_legend(title = "Interested")) +
+    # add count of participants in each bar
+    # geom_text(aes(y = 1, label = c("N = 27","","N = 28","","N = 22","", "N = 33", ""),
+    # vjust = -.5), size = 7) +
+    ggtitle(paste("Interested in Genetic Test About\n", test_chr,
+            paste(" (p-value = ", round(pval, digits = 4), ")", sep = ""), sep = ""))
+}
+
+# Sex
+bar_plot_associations("Nutrition_and_Behavior", "Nutrition and Behavior")
+bar_plot_associations("Genetic_ancestry", "Genetic Ancestry")
+bar_plot_associations("Medications", "Drug Response")
+bar_plot_associations("Improve_Outcome", "a Treatable Disease")
+
+bar_plot_associations("Cannot_improve_outcome", "an Untreatable Disease")
+bar_plot_associations("Active_Infection", "an Active Infection")
+
+# Interested in genetic tests at all
+my_tbl <- table(data1$Sex, data1$test_interest)
+pval <- fisher.test(my_tbl)$p.value
+ggplot(data1[which(data1$Sex %in% c("Female", "Male")),] %>%
+         group_by(Sex, test_interest) %>%
+         summarise(n = n()) %>%
+         mutate(freq = round(n/sum(n), 2)),
+       aes(x = Sex, y = freq, fill = test_interest)) +
+  geom_bar(stat = 'identity') + xlab("Sex") + ylab("Proportion") +
+  guides(fill = guide_legend(title = "")) +
+  ggtitle(paste("Interested in Genetic Tests At All\n",
+  paste("(p-value = ", round(pval, digits = 4), ")", sep = "")))
+```
+
+## Plot and test whether Age is associated with interest in different genetic tests
+```{r, fig.width=6.5, fig.height=5, echo=FALSE, warning=FALSE, message=FALSE}
+# function to perform ttest on age and test type interest
+box_plot_associations <- function(test_type, test_chr, dem_var = "Age", dem_chr = "Age") {
+  # data
+  plot_data <- select(data1, dem_var, test_type)
+  colnames(plot_data) <- c("dem_var", "test_type")
+  # t-test
+  pval <- t.test(plot_data %>% filter(test_type=="Yes") %>% select(dem_var),
+                 plot_data %>% filter(test_type=="No") %>% select(dem_var), 
+                 var.equal = FALSE)$p.value
+  # plot
+  ggplot(plot_data %>% 
+           filter(test_type %in% c("Yes", "No")) %>%
+           group_by(test_type) %>%
+           mutate(n = n()),
+         aes(x = test_type, y = dem_var, fill = test_type)) +
+    # plot type and axis labels
+    geom_boxplot() + xlab("Interested") + ylab(dem_chr) + # my_theme +
+    # add count of participants in each group
+    geom_text(aes(x = test_type, y = 95, label = paste("N =", n)), size = 5) +
+    theme(legend.position = "none") +
+    ggtitle(paste("Interested in Genetic Test About\n", test_chr,
+    paste(" (p-value = ", round(pval, digits = 4), ")", sep = ""), sep = ""))
+
+}
+
+# Age
+box_plot_associations("Nutrition_and_Behavior", "Nutrition & Behavior")
+box_plot_associations("Genetic_ancestry", "Genetic Ancestry") # * significant
+box_plot_associations("Medications", "Drug Response")
+box_plot_associations("Improve_Outcome", "a Treatable Disease")
+box_plot_associations("Cannot_improve_outcome", "an Untreatable Disease") # * significant
+box_plot_associations("Active_Infection", "an Active Infection") # * significant
+
+# Plot how many people were interested in at least one, none, or all tests
+# (all being a subset of at least one)
+# Age continuous
+ggplot(data1, aes(x = test_interest, y = Age, fill = test_interest)) +
+  geom_boxplot() +
+  xlab("Interest") + ylab("Age") +
+  theme(legend.position = "None") +
+  ggtitle("Interested in Genetic Tests At All")
+knitr::knit_exit()
+```
+
+## Plotting level of interest before and after learning about GINA or life insurance policy
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# keep only necessary variables
+data2 <- data1 %>% select(counts, Employer_Test, Employer_Test_GINA, Employer_Test_LI,
+Insurance_Test, Insurance_Test_GINA, Insurance_Test_LI)
+
+# Sankey for changing answer
+plot_sankey <- function(test_provider, change, char = "GINA") {
+# get direction of answer changes 3x3 table
+ans_change <- ftable(data2[[test_provider]], data2[[change]])
+ans_change_2 <- ans_change[(nrow(ans_change)-2):nrow(ans_change),
+                           (ncol(ans_change)-2):ncol(ans_change)]
+# Possible before and after answers
+nodes = data.frame("Interest" = c("Unsure", "No", "Yes", "Unsure", "No", "Yes"))
+# Number of participants going from each answer to the next
+# (for example: 0, 3, 68 means 68 participants said no before and after)
+
+links = as.data.frame(matrix(c(
+0, 3, ans_change_2[1,1], # unsure to unsure
+0, 4, ans_change_2[1,2], # unsure to no
+0, 5, ans_change_2[1,3], # unsure to yes
+1, 4, ans_change_2[2,2], # no to no
+1, 3, ans_change_2[2,1], # no to unsure
+1, 5, ans_change_2[2,3], # no to yes
+2, 5, ans_change_2[3,3], # yes to yes
+2, 3, ans_change_2[3,1], # yes to unsure
+2, 4, ans_change_2[3,2]), # yes to no
+byrow = TRUE, ncol = 3))
+names(links) = c("source", "target", "value")
+# Add a 'group' column to each connection:
+links$group <- as.factor(c("unsure","unsure", "unsure",
+                           "no","no", "no",
+                           "yes", "yes", "yes"))
+# Give a color for each group:
+my_color <- 'd3.scaleOrdinal() .domain(["unsure", "no", "yes"]) .range(["#FCAE00", "#009104",
+"#003C71"])'
+# Perform McNemar's Test to get a p-value
+pval <- mcnemar.test(ans_change_2, correct = F)$p.value
+# Plot
+# change this so it plots in plot section
+p <- browsable(
+  tagList(
+  tags$h1(paste("Change in Interest in", test_provider, "After Learning About", char,
+  paste("(p-value = ", format(pval, digits = 2, scientific = T), ")", sep = ""))),
+  sankeyNetwork(Links = links, Nodes = nodes, Source = "source",
+  Target = "target", Value = "value", NodeID = "Interest",
+  fontSize= 58, nodeWidth = 100, colourScale = my_color,
+  LinkGroup = 'group', iterations = 0)
+  )
+  )
+  #return(list(ans_change, mcnemar.test(ans_change, correct=F), p))
+  #return(list(ans_change_2, p))
+  return(p)
+}
+
+# Employer Test
+## GINA
+plot_sankey("Employer_Test", "Employer_Test_GINA")
+## Life Insurance
+plot_sankey("Employer_Test", "Employer_Test_LI", "Life Insurance")
+# Medical Insurance
+## GINA
+plot_sankey("Insurance_Test", "Insurance_Test_GINA")
+## Life Insurance
+plot_sankey("Insurance_Test", "Insurance_Test_LI", "Life Insurance")
+
+## Still to do: look at which qualitative tags most influenced changes in answer
+```
+
+## Most important factors
+```{r, echo=FALSE}
+# employer test
+ET_IF <- as.data.frame(t(data1 %>%
+                           select(Employer_Test, ET_IF_who_sponsors:ET_IF_other) %>%
+                           group_by(Employer_Test) %>%
+                           summarise_all(sum)))
+et_total <- data1 %>% group_by(Employer_Test) %>% count()
+# other
+data1[which(data1$ET_IF_other==1),]$ET_other_text
+
+# insurance test
+Ins_IF <- as.data.frame(t(data1 %>%
+                            select(Insurance_Test, Ins_IF_who_sponsors:Ins_IF_other) %>%
+                            group_by(Insurance_Test) %>%
+                            summarise_all(sum)))
+ins_total <- data1 %>% group_by(Insurance_Test) %>% count()
+# other
+data1[which(data1$Ins_IF_other==1),]$Ins_other_text
+
+# research study
+RS_IF <- as.data.frame(t(data1 %>% 
+                           select(Research_Study, RS_IF_who_sponsors:RS_IF_other) %>%
+                           group_by(Research_Study) %>%
+                           summarise_all(sum)))
+rs_total <- data1 %>% group_by(Research_Study) %>% count()
+# other
+data1[which(data1$RS_IF_other==1),]$RS_other_text
+```
